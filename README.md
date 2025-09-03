@@ -1,66 +1,40 @@
-## Foundry
+# Critical Vulnerability in Stable2.sol: Permanent Fund Freezing via Non-Convergence
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+This repository contains a minimal, verifiable Proof of Concept (PoC) demonstrating a critical vulnerability in the `Stable2.sol` Well function. The vulnerability allows for a conditional Denial of Service (DoS), leading to a **permanent freezing of all user funds** within the affected Well.
 
-Foundry consists of:
+## Summary (TL;DR)
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+The `calcLpTokenSupply` function, which is essential for all core AMM operations, contains a critical flaw in its iterative convergence algorithm. Specific, achievable reserve balances can cause this function to fail its convergence checks, making it revert every time it is called. An attacker can trigger this state with a single, crafted swap. Once triggered, all subsequent interactions (swaps, adding/removing liquidity) will fail, permanently locking all assets in the contract until a privileged upgrade is performed.
 
-## Documentation
+## Vulnerability Details
 
-https://book.getfoundry.sh/
+### Mechanism
 
-## Usage
+The `calcLpTokenSupply` function iteratively calculates the invariant `D` (the total LP supply). To prevent infinite loops in edge cases, it contains logic to detect if the calculation is oscillating between two values. This is handled by the `stableOscillation` boolean flag.
 
-### Build
+### The Flaw
 
-```shell
-$ forge build
-```
+The `stableOscillation` flag is incorrectly scoped. It is declared **inside** the `for` loop, which means its state is reset to `false` at the beginning of every single iteration. This completely disables the oscillation-handling mechanism, as it can never remember the result of the previous iteration.
 
-### Test
-
-```shell
-$ forge test
-```
-
-### Format
-
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+**File:** `src/Stable2.sol`  
+**Vulnerable Code (Lines 93-94 & 109-112):**
+```solidity
+// ...
+function calcLpTokenSupply(...) public view returns (uint256 lpTokenSupply) {
+    // ...
+    for (uint256 i = 0; i < 255; i++) {
+        bool stableOscillation; // BUG: Re-initialized to `false` every iteration (Line 94)
+        // ...
+        if (lpTokenSupply > prevReserves) {
+            if (lpTokenSupply - prevReserves == 2) {
+                if (stableOscillation) { // UNREACHABLE: This condition can never be true
+                    return lpTokenSupply - 1;
+                }
+                stableOscillation = true;
+            }
+            // ...
+        }
+        // ...
+    }
+    revert("Non convergence: calcLpTokenSupply"); // The function reverts if convergence fails
+}
